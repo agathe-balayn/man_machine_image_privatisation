@@ -6,6 +6,8 @@ import numpy as np
 import json
 from shapely.geometry import Polygon
 import image_slicer
+import time
+
 
 # DeepLab code:
 # taken from https://gluon-cv.mxnet.io/build/examples_segmentation/demo_deeplab.html
@@ -81,6 +83,16 @@ def load_model(model_type):
     return model
 
 
+def softmax(x):
+    """
+    Compute softmax values for each sets of scores in x.
+    
+    Rows are scores for each class. 
+    Columns are predictions (samples).
+    """
+    scoreMatExp = np.exp(x)
+    return scoreMatExp / scoreMatExp.sum(0)
+
 def get_predictions(input_data, model_type, loaded_model=''):
     
     if model_type == 'vgg_places365':
@@ -100,15 +112,34 @@ def get_predictions(input_data, model_type, loaded_model=''):
         nb_im += 1
         print("Currently treating image number ", nb_im)
         if model_type == 'deeplab':
+            print("predicting")
             pred = loaded_model.predict(img)
             # Check what the outputs of predict are: is it probability? does it depend on the class or is it class-agnostic?
-            idx_labels = mx.nd.squeeze(mx.nd.argmax(pred, 1)).asnumpy()
+            print("calculating labels")
+            #idx_labels = mx.nd.squeeze(mx.nd.argmax(pred, 1)).asnumpy()
+
+            start = time.time()
+            idx_labels = mx.nd.squeeze(mx.nd.topk(pred, axis=1, ret_typ='indices')) # check for speed
+            end = time.time()
+            print(end - start)
+
             # Get the probabilities
-            for pixel_h in range(0, pred.shape[2]):
-            	for pixel_v in range(0, pred.shape[3]):
-            		pred[0, :, pixel_h, pixel_v] = pred[0, :, pixel_h, pixel_v].softmax()
+            #for pixel_h in range(0, pred.shape[2]):
+            #	for pixel_v in range(0, pred.shape[3]):
+            #		pred[0, :, pixel_h, pixel_v] = pred[0, :, pixel_h, pixel_v].softmax()
             # Decide later whether we make it into actual labels.
-            output.append((pred.asnumpy(), idx_labels)) # this gives both the prediction "confidence" and the final label (in idx).
+            #output.append((pred.asnumpy(), idx_labels)) # this gives both the prediction "confidence" and the final label (in idx).
+            print("calculating probabilities.")
+            start = time.time()
+            proba = mx.nd.exp(pred).asnumpy()
+            dividend = np.expand_dims(np.reciprocal(np.sum(proba, axis = 1)), axis=1)
+            dividend = np.repeat(dividend, output.shape[1], axis = 1)
+            proba = np.multiply(proba, dividend)
+            end = time.time()
+            print(end - start)
+            #proba = np.apply_along_axis(softmax, 1, pred.asnumpy())
+            output.append((proba, idx_labels))
+
             #output.append(pred)
             # Maybe we'll need to use predictions probabilityes and not only labels.
         elif model_type == 'OCR': 
