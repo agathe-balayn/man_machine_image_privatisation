@@ -45,7 +45,25 @@ def thresholding(image):
     return cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
 
-def prepare_dataset(path_image_folder, model_type):
+def resize_image(_image, smallest_size):
+    
+
+    if (_image.shape[0] > smallest_size) and (_image.shape[1] > smallest_size):
+        shapes = [_image.shape[0], _image.shape[1]]
+        min_dim = shapes.index(min(shapes))
+        max_dim = shapes.index(max(shapes))    
+        ratio = min(shapes) / smallest_size    
+        other_shape = max(shapes)/ ratio   
+        new_size = [0, 0]    
+        new_size[min_dim] = smallest_size    
+        new_size[max_dim] = int(other_shape)    
+        img = image.imresize(_image, new_size[1], new_size[0])
+    return img, ratio
+
+
+
+
+def prepare_dataset(path_image_folder, model_type, do_resize=False, resize_size=512):
     list_image = []
     # Go through the directory
     list_image_names = []
@@ -57,8 +75,12 @@ def prepare_dataset(path_image_folder, model_type):
         # print(path_in_str)
         
         # check for which model the data will be used and pre-process accordingly.
+        ratio = 1
+        list_ratio = []
         if model_type == 'deeplab':
             img = image.imread(path_in_str)
+            if do_resize:
+            	img, ratio = resize_image(img, resize_size)
             img = test_transform(img, ctx)
         
         elif model_type == 'OCR':
@@ -73,8 +95,9 @@ def prepare_dataset(path_image_folder, model_type):
             img = np.expand_dims(img, 0)
 
         list_image.append(img)
+        list_ratio.append(ratio)
 
-    return list_image, list_image_names
+    return list_image, list_image_names, list_ratio
 
 
 def load_model(model_type):
@@ -133,7 +156,7 @@ def get_predictions(input_data, model_type, loaded_model=''):
             start = time.time()
             proba = mx.nd.exp(pred).asnumpy()
             dividend = np.expand_dims(np.reciprocal(np.sum(proba, axis = 1)), axis=1)
-            dividend = np.repeat(dividend, output.shape[1], axis = 1)
+            dividend = np.repeat(dividend, pred.shape[1], axis = 1)
             proba = np.multiply(proba, dividend)
             end = time.time()
             print(end - start)

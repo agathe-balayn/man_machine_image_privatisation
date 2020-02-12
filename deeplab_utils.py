@@ -75,25 +75,27 @@ def find_class_name(x):
 def create_mask_segments(prediction):
     # Get unique possible values
     unique_val = np.unique(prediction)
-    list_masks_dec = []
+    #list_masks_dec = []
     list_masks_rgb = []
     list_class = []
-
+    print("Number of masks to create: ", unique_val.shape[0])
     for x in np.nditer(unique_val):
+        print("Creating mask for class ", x)
+
         list_class.append(find_class_name(int(x)))
         #new_mask = np.zeros((prediction.shape[0], prediction.shape[1], 3))
         # Where we find the value, we set it to 1 to become white.
         #idx_mask = np.where(prediction == x)
-        masked_im_dec = (np.where(prediction == x, 0.99, 0))
+        #masked_im_dec = (np.where(prediction == x, 0.99, 0))
         masked_im_rgb = (np.where(prediction == x, 255, 0))
         #print(masked_im)
-        new_mask_dec = np.repeat(masked_im_dec[:, :, np.newaxis], 3, axis=2) # np.expand_dims(masked_im, axis=2)
+        #new_mask_dec = np.repeat(masked_im_dec[:, :, np.newaxis], 3, axis=2) # np.expand_dims(masked_im, axis=2)
         new_mask_rgb = np.repeat(masked_im_rgb[:, :, np.newaxis], 3, axis=2)
         #print(new_mask)
-        list_masks_dec.append(new_mask_dec)
+        #list_masks_dec.append(new_mask_dec)
         list_masks_rgb.append(new_mask_rgb)
-    return list_masks_dec, list_masks_rgb, list_class
-
+    #return list_masks_dec, list_masks_rgb, list_class
+    return list_masks_rgb, list_class
 
 def contour_to_polygon(output_contours):
     list_polygon = []
@@ -104,10 +106,15 @@ def contour_to_polygon(output_contours):
     return list_polygon
 
 
-def deeplab_pred_to_output(prediction, _plot=False):
-    new_im_dec, new_im_rgb, list_class = (create_mask_segments(prediction))
+def deeplab_pred_to_output(prediction, _plot=False, size_back=False, list_ratio=0):
+    print("TODO: manage resizing of images.")
+    print("Creating masks.")
+    new_im_rgb, list_class = (create_mask_segments(prediction.asnumpy()))
+    # new_im_dec, new_im_rgb, list_class = (create_mask_segments(prediction))
+    print("Creating polygons.")
     list_polygons = []
     for mask, class_name in zip(new_im_rgb, list_class):
+        print("--getting contour")
         new_im1 = Image.fromarray(mask.astype('uint8'))
         new_im1_cv = cv.cvtColor(np.array(new_im1), cv.COLOR_RGB2BGR)
         imgray = cv.cvtColor(new_im1_cv, cv.COLOR_BGR2GRAY)
@@ -119,7 +126,7 @@ def deeplab_pred_to_output(prediction, _plot=False):
             cv.drawContours(new_im1_cv, contours, -1, (0,255,0), 3)
             plt.imshow( new_im1_cv)
             plt.show()
-
+        print("--transforming contour to poygon.")
         list_polygons.append((contour_to_polygon(contours), class_name))
     
     return list_polygons
