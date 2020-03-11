@@ -1,10 +1,13 @@
 import os
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw
 import cv2
 import numpy as np
 import json
 from shapely.geometry import Polygon
+from shapely.geometry import shape 
+import math
+
 import image_slicer
 import time
 
@@ -58,15 +61,39 @@ def resize_image(_image, smallest_size):
         new_size[min_dim] = smallest_size    
         new_size[max_dim] = int(other_shape)    
         img = image.imresize(_image, new_size[1], new_size[0])
-    return img, ratio
+    return img, ratio, shapes
 
 
 
+def prepare_sample(image_file, model_type, do_resize=False, resize_size=512):
+    path_in_str = str(image_file)
+       
+    # check for which model the data will be used and pre-process accordingly.
+    ratio = 1
+    if model_type == 'deeplab':
+        img = image.imread(path_in_str)
+        if do_resize:
+          	img, ratio, shapes = resize_image(img, resize_size)
+        img = test_transform(img, ctx)
+        
+    elif model_type == 'OCR':
+        img = cv2.imread(path_in_str)
+        img = get_grayscale(img)
+        img = thresholding(img)
+        
+    elif model_type == 'vgg_places365':
+        img = Image.open(path_in_str)
+        img = np.array(img, dtype=np.uint8)
+        img = resize(img, (224, 224))
+        img = np.expand_dims(img, 0)
+
+    return img, image_file.stem, ratio, shapes
 
 def prepare_dataset(path_image_folder, model_type, do_resize=False, resize_size=512):
     list_image = []
     # Go through the directory
     list_image_names = []
+
     pathlist = Path(path_image_folder).glob('**/*.*')
     for path in pathlist:
         # because path is object not string
@@ -77,10 +104,11 @@ def prepare_dataset(path_image_folder, model_type, do_resize=False, resize_size=
         # check for which model the data will be used and pre-process accordingly.
         ratio = 1
         list_ratio = []
+        list_shapes = []
         if model_type == 'deeplab':
             img = image.imread(path_in_str)
             if do_resize:
-            	img, ratio = resize_image(img, resize_size)
+            	img, ratio, shapes = resize_image(img, resize_size)
             img = test_transform(img, ctx)
         
         elif model_type == 'OCR':
@@ -96,8 +124,9 @@ def prepare_dataset(path_image_folder, model_type, do_resize=False, resize_size=
 
         list_image.append(img)
         list_ratio.append(ratio)
+        list_shapes.append(shapes)
 
-    return list_image, list_image_names, list_ratio
+    return list_image, list_image_names, list_ratio, list_shapes
 
 
 def load_model(model_type):
@@ -144,7 +173,7 @@ def get_predictions(input_data, model_type, loaded_model=''):
             start = time.time()
             idx_labels = mx.nd.squeeze(mx.nd.topk(pred, axis=1, ret_typ='indices')) # check for speed
             end = time.time()
-            print(end - start)
+            #print("Time: ", end - start)
 
             # Get the probabilities
             #for pixel_h in range(0, pred.shape[2]):
@@ -159,7 +188,7 @@ def get_predictions(input_data, model_type, loaded_model=''):
             dividend = np.repeat(dividend, pred.shape[1], axis = 1)
             proba = np.multiply(proba, dividend)
             end = time.time()
-            print(end - start)
+            #print("Time: ", end - start)
             #proba = np.apply_along_axis(softmax, 1, pred.asnumpy())
             output.append((proba, idx_labels))
 
@@ -199,11 +228,13 @@ def pairwise(iterable):
     a = iter(iterable)
     return zip(a, a)
 
-def create_image_mask(image, polygon):
+def create_image_mask(image_size, polygon):
     # From an image and the coordinates of a polygon, create a binary matrix (1 when in the polygon, 0 otherwise).
-    nx, ny = im.size
+    nx, ny = image_size[0], image_size[1]
     img = Image.new("L", [nx, ny], 0)
-    ImageDraw.Draw(img).polygon(poly, outline=1, fill=1)
+    #print(polygon)
+    #print(type(polygon))
+    ImageDraw.Draw(img).polygon(polygon, outline=1, fill=1)
     mask = np.array(img)
     return mask
 
@@ -225,104 +256,155 @@ def compute_mask_accuracy(GT_mask, pred_mask):
     acc = (n_pixel_total - n_incorrect_pixel) / n_pixel_total
     return acc
     
-def evaluate_privacy(priv_elem_GT, predictions, image):
+
+def compute_IOU(poly_a, poly_b):
+    return poly_a.intersection(poly_b).area / poly_a.union(poly_b).area
+
+
+
+
+#Check Polygon Geometry
+def isPolygonValid(geom):
+    if len(geom) >= 6:
+        return 1
+    else:
+        return 0
+    ### We could also check that it has an even number of coordinates.
+    #try:
+    #    shape(geom)
+    #    return 1
+    #except:
+    #    return 0
+
+def evaluate_privacy(priv_elem_GT, predictions, image_size):
         
     # Go through each private element in predictions
     print("TODO: read predictions.")
-    list_poly_pred = []
+    list_poly_pred = predictions
 
     
     dict_iou = {}
-    
+    nb_non_valid_polygons_GT = 0
+    #nb_non_valid_polygons_pred = 0
     ### Compute overlap
     for instance_priv in priv_elem_GT:
-            
-        for instance_priv_poly in priv_elem_GT[instance_priv]:
-            # Compute IoU for each prediction
-            a = Polygon(instance_priv_poly)
-            
-            iou_preds = []
-            # Get the max IoU with all the predicted things.
-            for poly in list_poly_pred:
-                b = Polygon(poly)
-                iou_preds.append(a.intersection(b).area / a.union(b).area)
-            
-            if instance_priv in dict_iou:
-                dict_iou[instance_priv].append(max(iou_preds))
-            else:
-                dict_iou[instance_priv] = max(iou_preds)
+        #print(instance_priv)
+        #print(priv_elem_GT)
+        for instance_priv_poly in instance_priv['polygons']:
+
+            if isPolygonValid(instance_priv_poly):
+                # Compute IoU for each prediction
+                #instance_priv_poly = [float(i) for i in instance_priv_poly]
+                a = listCoordinates_to_shapelyPolygon(instance_priv_poly) #Polygon(instance_priv_poly)
                 
+                iou_preds = []
+                # Get the max IoU with all the predicted things.
+                for poly in list_poly_pred:
+                    #if isPolygonValid(poly):
+                        #b = Polygon(poly)
+                        iou_preds.append(compute_IOU(a, poly))
+                    #else:
+                        #nb_non_valid_polygons_pred += 1
+                if len(iou_preds) > 0:
+                    if instance_priv['attr_id'] in dict_iou:
+                        dict_iou[instance_priv['attr_id']].append(max(iou_preds))
+                    else:
+                        dict_iou[instance_priv['attr_id']] = [max(iou_preds)]
+            else: 
+                nb_non_valid_polygons_GT += 1
+                print(instance_priv_poly)
+    print("nb non valid polygons: in GT: ", nb_non_valid_polygons_GT)#, ", in predictions: ", nb_non_valid_polygons_pred)          
     
     ### Compute pixel-wise privacy-element -wise accuracy  
     dict_pixel_perf = {}
     # Get the mask for the predictions
     list_mask_pred = []
     for poly in list_poly_pred:
-        list_mask_pred.append(create_image_mask(image, poly))
+        list_mask_pred.append(create_image_mask(image_size, list(zip(*poly.exterior.coords.xy)))) # list(poly.exterior.coords.xy)))
     pred_mask = combine_image_masks(list_mask_pred)
                          
     # Go through each private element of each category
     for instance_priv in priv_elem_GT:
         # Create the binary mask for the private element:
         list_masks_GT = []
-        for instance_priv_poly in priv_elem_GT[instance_priv]:
+        for instance_priv_poly in instance_priv['polygons']:
             # Compare each pixel of the private element
-            list_masks_GT.append(create_image_mask(image, instance_priv_poly))
+            a = listCoordinates_to_shapelyPolygon(instance_priv_poly)
+            list_masks_GT.append(create_image_mask(image_size, list(zip(*a.exterior.coords.xy))))
         GT_mask = combine_image_masks(list_masks_GT)
     
         # Check 1 if obfuscated, 0 otherwise. 
         # Get accuracy. (number 1 / total number pixels)
         acc = compute_mask_accuracy(GT_mask, pred_mask)
-        dict_pixel_perf[instance_priv] = acc
+        dict_pixel_perf[instance_priv['attr_id']] = acc
     return dict_iou, dict_pixel_perf
 
+def listCoordinates_to_shapelyPolygon(list_coordinates):
+    print("TODO: check order coordinates")
+    p = []
+    for x, y in pairwise(list_coordinates):
+        p.append((x, y))
+    return Polygon(p)
                          
-def GT_annotation_to_polygon_dict(ground_truth):
+def GT_annotation_to_polygon_dict(ground_truth, ratio=1):
     priv_elem_GT = {}
     for private_elem in ground_truth['attributes']:
         name = private_elem['attr_id']
         list_polygons = private_elem['polygons']
+        if name not in priv_elem_GT:
+        	priv_elem_GT[name] = []
         # Reshape the polygons into a readable format.
-        readable_poly = []
+        #readable_poly = []
         for poly in list_polygons:
             p = []
             for x, y in pairwise(poly):
-                p.append((x, y))
-            readable_poly.append(p)  
-        if name in priv_elem_GT:
-            priv_elem_GT[name].append(readable_poly)
-        else:
-            priv_elem_GT[name] = readable_poly
+                p.append((int(x/ratio), int(y/ratio)))
+            #readable_poly.append(p)  
+            priv_elem_GT[name].append(p)
+        #priv_elem_GT[name].append(readable_poly)
+        #print(len(readable_poly))
+        #print(priv_elem_GT[name])
+        #if name in priv_elem_GT:
+            #priv_elem_GT[name].append(readable_poly)
+        #else:
+            #priv_elem_GT[name] = readable_poly
     return priv_elem_GT
                          
 def segment_array(array, segmentation_size):
-    im_w = array.shape[1] 
-    im_h = array.shape[0]
-    print("TODO: check the validity / col/row")
+
+    im_h = array.shape[1] 
+    im_w = array.shape[0]
+    #print(im_w, im_h)
+    #print("TODO: check the validity / col/row")
     columns, rows = image_slicer.calc_columns_rows(segmentation_size)
-    tile_w, tile_h = int(floor(im_w / columns)), int(floor(im_h / rows))
+    tile_w, tile_h = int(math.floor(im_w / columns)), int(math.floor(im_h / rows))
+    #print(tile_w, tile_h)
     segments = []
-    for pos_y in range(0, im_h - rows, tile_h): # -rows for rounding error.
-        for pos_x in range(0, im_w - columns, tile_w): # as above.
+    for pos_y in range(0, im_h, tile_h):#for pos_y in range(0, im_h - rows, tile_h): # -rows for rounding error.
+        for pos_x in range(0, im_w, tile_w):#    for pos_x in range(0, im_w - columns, tile_w): # as above.
             #area = (pos_x, pos_y, pos_x + tile_w, pos_y + tile_h)
-            segments.append[array[pos_x:(pos_x + tile_w)][pos_y:(pos_y + tile_h)]] 
-            print("TODO: check the sizes")
+            a = array[pos_x:(pos_x + tile_w),pos_y:(pos_y + tile_h)]
+            #print(a.shape)
+            segments.append(array[pos_x:(pos_x + tile_w),pos_y:(pos_y + tile_h)]) 
+            #print("TODO: check the sizes")
+    #print(segments)
     return segments
                          
-def evaluate_instance(ground_truth, predictions, segmentation_size):
+def evaluate_instance(priv_elem_GT, predictions, segmentation_size, image_size):
     ### Compute the image masks
     # For the GT
     list_masks_GT = []
     for instance_priv in priv_elem_GT:
         # Create the binary mask for the private element:
-        for instance_priv_poly in priv_elem_GT[instance_priv]:
-            # Compare each pixel of the private element
-            list_masks_GT.append(create_image_mask(image, instance_priv_poly))
+        for instance_priv_poly in instance_priv['polygons']:
+            # Compare each pixel of the private element  
+            list_masks_GT.append(create_image_mask(image_size, instance_priv_poly)) #  list(zip(*poly.exterior.coords.xy)))
     GT_mask = combine_image_masks(list_masks_GT)
     # For the predictions
+    list_poly_pred = predictions
     list_mask_pred = []
     for poly in list_poly_pred:
-        list_mask_pred.append(create_image_mask(image, poly))
+        list_mask_pred.append(create_image_mask(image_size, list(zip(*poly.exterior.coords.xy))))
     pred_mask = combine_image_masks(list_mask_pred)                     
                          
     ### Segment the masks
@@ -348,17 +430,25 @@ def evaluate_instance(ground_truth, predictions, segmentation_size):
                 dict_counts['FP'] += 1
             else:
                 dict_counts['TN'] += 1
-            
-    precision = dict_counts['TP'] / (dict_counts['TP'] + dict_counts['FP'])
-    recall = dict_counts['TP'] / (dict_counts['TP'] + dict_counts['FN'])
+        
+    print("TODO: how to deal with NaN values?")    
+    if (dict_counts['TP'] + dict_counts['FP']) > 0:
+        precision = dict_counts['TP'] / (dict_counts['TP'] + dict_counts['FP'])
+    else:
+        precision = np.nan
+    if (dict_counts['TP'] + dict_counts['FN']) > 0:
+        recall = dict_counts['TP'] / (dict_counts['TP'] + dict_counts['FN'])
+    else:
+    	recall = np.nan
                          
     ### Compute precision, recall
     return {'precision': precision, 'recall': recall}
 
-def evaluate(ground_truth, predictions, evaluation_type, parameter_interval, list_image_names):
+def evaluate(ground_truth, predictions, evaluation_type, parameter_interval, list_image_names, list_image_shapes): #, image_folder):
     # ground_truth should be a list of dictionary of the private elements with their list of polygons
     # priv_elem_GT = GT_annotation_to_polygon_dict(ground_truth)
-
+    #print("TODO: resize image predictions at some point!!! -> I did this already in the code for output post processing for the semantic segmentation.")
+    #print("TODO: get image size")
     if evaluation_type == 'privacy_type':
         dict_iou = {}
         dict_pixel = {}
@@ -366,7 +456,7 @@ def evaluate(ground_truth, predictions, evaluation_type, parameter_interval, lis
             # Get the ground truth 
             # Name of the image
             im_name = list_image_names[idx_im]
-            result_per_iou, result_per_pixel = evaluate_privacy(ground_truth[im_name], predictions[idx_im])
+            result_per_iou, result_per_pixel = evaluate_privacy(ground_truth[im_name]['attributes'], predictions[idx_im], list_image_shapes[idx_im])
             for priv_elem in result_per_iou:
                 if priv_elem not in dict_iou:
                     nb_pos = {'total_count': len(result_per_iou[priv_elem])}
@@ -398,7 +488,7 @@ def evaluate(ground_truth, predictions, evaluation_type, parameter_interval, lis
             dict_per_threshold = {}
             for param_eval in dict_iou[priv_elem]:
                 if param_eval != 'total_count':
-                    dict_per_threshold[param_eval] = dict_iou[priv_elem][param_eval] / dict_iou[priv_elem][total_count]
+                    dict_per_threshold[param_eval] = dict_iou[priv_elem][param_eval] / dict_iou[priv_elem]['total_count']
             score_iou_list[priv_elem] = dict_per_threshold
         score_pixel_list = {}
         for priv_elem in dict_pixel:
@@ -412,7 +502,7 @@ def evaluate(ground_truth, predictions, evaluation_type, parameter_interval, lis
             dict_segment_result[param_eval] = {'precision': [], 'recall': []}
             for idx_im in range(len(predictions)):
                 im_name = list_image_names[idx_im]
-                result = evaluate_instance(ground_truth[im_name], predictions[idx_im], param_eval)
+                result = evaluate_instance(ground_truth[im_name]['attributes'], predictions[idx_im], param_eval, list_image_shapes[idx_im])
                 dict_segment_result[param_eval]['precision'].append(result['precision'])
                 dict_segment_result[param_eval]['recall'].append(result['recall'])
             dict_segment_result[param_eval]['precision'] = np.mean(dict_segment_result[param_eval]['precision'])
