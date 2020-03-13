@@ -50,17 +50,24 @@ def thresholding(image):
 
 def resize_image(_image, smallest_size):
     
-
-    if (_image.shape[0] > smallest_size) and (_image.shape[1] > smallest_size):
-        shapes = [_image.shape[0], _image.shape[1]]
+    shapes = [_image.shape[0], _image.shape[1]]
+    if (shapes[0] > smallest_size) and (shapes[1] > smallest_size):
+        
         min_dim = shapes.index(min(shapes))
         max_dim = shapes.index(max(shapes))    
         ratio = min(shapes) / smallest_size    
         other_shape = max(shapes)/ ratio   
-        new_size = [0, 0]    
-        new_size[min_dim] = smallest_size    
-        new_size[max_dim] = int(other_shape)    
+        new_size = [0, 0]   
+        if min_dim == max_dim:
+            new_size[0] = smallest_size
+            new_size[1] = smallest_size
+        else: 
+            new_size[min_dim] = smallest_size    
+            new_size[max_dim] = int(other_shape)    
         img = image.imresize(_image, new_size[1], new_size[0])
+    else:
+    	img = _image
+    	ratio = 1
     return img, ratio, shapes
 
 
@@ -80,12 +87,15 @@ def prepare_sample(image_file, model_type, do_resize=False, resize_size=512):
         img = cv2.imread(path_in_str)
         img = get_grayscale(img)
         img = thresholding(img)
+        shapes = 1
+
         
     elif model_type == 'vgg_places365':
         img = Image.open(path_in_str)
         img = np.array(img, dtype=np.uint8)
         img = resize(img, (224, 224))
         img = np.expand_dims(img, 0)
+        shapes = (224, 224)
 
     return img, image_file.stem, ratio, shapes
 
@@ -162,7 +172,7 @@ def get_predictions(input_data, model_type, loaded_model=''):
     nb_im = 0
     for img in input_data:
         nb_im += 1
-        print("Currently treating image number ", nb_im)
+        #print("Currently treating image number ", nb_im)
         if model_type == 'deeplab':
             print("predicting")
             pred = loaded_model.predict(img)
@@ -200,9 +210,10 @@ def get_predictions(input_data, model_type, loaded_model=''):
             # Get the boundix boxes around the words
             n_boxes = len(pred['text'])
             for i in range(n_boxes):
-                # if int(pred['conf'][i]) > 60: to filter per confidence ! see later!
-                (x, y, w, h) = (pred['left'][i], pred['top'][i], pred['width'][i], pred['height'][i])
-                prediction_list.append((pred['text'][i], (x, y, w, h)))
+                   if pred['text'][i] != '':
+                    # if int(pred['conf'][i]) > 60: to filter per confidence ! see later!
+                    (x, y, w, h) = (pred['left'][i], pred['top'][i], pred['width'][i], pred['height'][i])
+                    prediction_list.append((pred['text'][i], (x, y, w, h)))
             output.append(prediction_list)
         elif model_type == 'vgg_places365':
             model = VGG16_Places365(weights='places')
