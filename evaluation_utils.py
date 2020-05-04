@@ -11,6 +11,11 @@ import math
 import image_slicer
 import time
 
+import image_utils as mapping_u
+
+from keras import backend as K 
+
+
 
 # DeepLab code:
 # taken from https://gluon-cv.mxnet.io/build/examples_segmentation/demo_deeplab.html
@@ -28,7 +33,7 @@ ctx = mx.cpu(0)
 # OCR code
 import pytesseract
 from pytesseract import Output
-
+import OCR_utils as OCR_u
 
 # If you don't have tesseract executable in your PATH, include the following:
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe' # Path('C:/Program Files\ Tesseract-OCR\ tesseract').as_posix()
@@ -66,8 +71,8 @@ def resize_image(_image, smallest_size):
             new_size[max_dim] = int(other_shape)    
         img = image.imresize(_image, new_size[1], new_size[0])
     else:
-    	img = _image
-    	ratio = 1
+        img = _image
+        ratio = 1
     return img, ratio, shapes
 
 
@@ -80,7 +85,7 @@ def prepare_sample(image_file, model_type, do_resize=False, resize_size=512):
     if model_type == 'deeplab':
         img = image.imread(path_in_str)
         if do_resize:
-          	img, ratio, shapes = resize_image(img, resize_size)
+              img, ratio, shapes = resize_image(img, resize_size)
         img = test_transform(img, ctx)
         
     elif model_type == 'OCR':
@@ -118,13 +123,14 @@ def prepare_dataset(path_image_folder, model_type, do_resize=False, resize_size=
         if model_type == 'deeplab':
             img = image.imread(path_in_str)
             if do_resize:
-            	img, ratio, shapes = resize_image(img, resize_size)
+                img, ratio, shapes = resize_image(img, resize_size)
             img = test_transform(img, ctx)
         
         elif model_type == 'OCR':
-            img = cv2.imread(path_in_str)
-            img = get_grayscale(img)
-            img = thresholding(img)
+            #img = cv2.imread(path_in_str)
+            #img = get_grayscale(img)
+            #img = thresholding(img)
+            continue
         
         elif model_type == 'vgg_places365':
             img = Image.open(path_in_str)
@@ -155,7 +161,7 @@ def softmax(x):
     scoreMatExp = np.exp(x)
     return scoreMatExp / scoreMatExp.sum(0)
 
-def get_predictions(input_data, model_type, loaded_model=''):
+def get_predictions(input_data, model_type, loaded_model='', visualisation=False, additional_param={}):
     
     if model_type == 'vgg_places365':
         file_name = Path('Keras_VGG16_places365/categories_places365.txt')
@@ -167,6 +173,9 @@ def get_predictions(input_data, model_type, loaded_model=''):
             for line in class_file:
                 classes.append(line.strip().split(' ')[0][3:])
         classes = tuple(classes)
+
+        if "top_k" not in additional_param:
+        	additional_param["top_k"] = -1
     
     output = []
     nb_im = 0
@@ -187,8 +196,8 @@ def get_predictions(input_data, model_type, loaded_model=''):
 
             # Get the probabilities
             #for pixel_h in range(0, pred.shape[2]):
-            #	for pixel_v in range(0, pred.shape[3]):
-            #		pred[0, :, pixel_h, pixel_v] = pred[0, :, pixel_h, pixel_v].softmax()
+            #    for pixel_v in range(0, pred.shape[3]):
+            #        pred[0, :, pixel_h, pixel_v] = pred[0, :, pixel_h, pixel_v].softmax()
             # Decide later whether we make it into actual labels.
             #output.append((pred.asnumpy(), idx_labels)) # this gives both the prediction "confidence" and the final label (in idx).
             print("calculating probabilities.")
@@ -205,7 +214,9 @@ def get_predictions(input_data, model_type, loaded_model=''):
             #output.append(pred)
             # Maybe we'll need to use predictions probabilityes and not only labels.
         elif model_type == 'OCR': 
-            pred = pytesseract.image_to_data(img, output_type=Output.DICT)
+            #pred = pytesseract.image_to_data(img, output_type=Output.DICT)
+            pred = OCR_u.get_OCR_predictions(img, visualisation) # This should be the path to the image.
+            """
             prediction_list = []
             # Get the boundix boxes around the words
             n_boxes = len(pred['text'])
@@ -215,16 +226,56 @@ def get_predictions(input_data, model_type, loaded_model=''):
                     (x, y, w, h) = (pred['left'][i], pred['top'][i], pred['width'][i], pred['height'][i])
                     prediction_list.append((pred['text'][i], (x, y, w, h)))
             output.append(prediction_list)
+
+            """
+            output.append(pred)
         elif model_type == 'vgg_places365':
-            model = VGG16_Places365(weights='places')
-            #predictions_to_return = 5
-            preds = model.predict(img)[0]
-            top_preds = np.argsort(preds)[::-1]#[0:predictions_to_return]
-            top_preds_score = [preds[i] for i in top_preds]
-            prediction_list = []
-            for i in range(0, len(top_preds)):
-                prediction_list.append((classes[top_preds[i]], top_preds_score[i]))
+            image = Image.open(img)
+            image_array = np.array(image, dtype=np.uint8)
+            print(image_array.shape)
+            if len(image_array.shape) == 2:
+                # Make image from grayscale to RGB.
+                rgb = image.convert("RGB")
+                width,height = rgb.size
+
+                for x in range(width):
+                    for y in range(height):
+                        r, g, b = rgb.getpixel((x, y))
+                        value  = r* 299.0/1000 + g* 299.0/1000 + b * 299.0/1000
+                        value = int(value)
+                        rgb.putpixel ((x, y), value)
+                image_array = np.array(rgb, dtype=np.uint8)
+            image = image_array
+
+
+            if len(image.shape) >2:
+                if image.shape[2] == 4: # Sometimes the images are read in RGBA and not RGB...
+                    png = Image.open(img)
+                    png.load() # required for png.split()
+                    background = Image.new("RGB", png.size, (255, 255, 255))
+                    background.paste(png, mask=png.split()[3])
+                    #background.save('foo.jpg', 'JPEG', quality=80)
+
+                    image = np.array(background, dtype=np.uint8)
+
+                image = resize(image, (224, 224))
+                image = np.expand_dims(image, 0)
+
+                model = VGG16_Places365(weights='places')
+                #predictions_to_return = 5
+                preds = model.predict(image)[0]
+                top_preds = np.argsort(preds)[::-1]#[0:predictions_to_return]
+                top_preds_score = [preds[i] for i in top_preds]
+                prediction_list = []
+                if additional_param["top_k"] == -1:
+                    additional_param["top_k"] = len(top_preds)
+                for i in range(0, additional_param["top_k"]):#len(top_preds)):
+                    prediction_list.append((classes[top_preds[i]], top_preds_score[i]))
+            else:
+                prediction_list = []
             output.append(prediction_list)
+            del model
+            K.clear_session()
 
     return output
         
@@ -266,6 +317,45 @@ def compute_mask_accuracy(GT_mask, pred_mask):
     n_incorrect_pixel = (mask_diff == 1).sum()
     acc = (n_pixel_total - n_incorrect_pixel) / n_pixel_total
     return acc
+
+def compute_mask_TP(GT_mask, pred_mask):
+    # Get number of overlapping pixels with the GT mask
+    mask_diff = np.subtract(GT_mask, pred_mask)
+    mask_diff = np.subtract(mask_diff, pred_mask)
+    return (mask_diff == -1).sum()
+
+def compute_mask_FP(GT_mask, pred_mask):
+    # Get number of overlapping pixels with the GT mask
+    mask_diff = np.subtract(GT_mask, pred_mask)
+    return  (mask_diff == -1).sum()
+
+def compute_mask_TN(GT_mask, pred_mask):
+    # Get number of overlapping pixels with the GT mask
+    mask_diff = np.subtract(GT_mask, pred_mask)
+    mask_diff = np.subtract(mask_diff, pred_mask)
+    return (mask_diff == 0).sum()
+
+def compute_mask_FN(GT_mask, pred_mask):
+    # Get number of overlapping pixels with the GT mask
+    mask_diff = np.subtract(GT_mask, pred_mask)
+    return (mask_diff == 1).sum()
+
+
+def compute_mask_precision(GT_mask, pred_mask):
+    TP = compute_mask_TP(GT_mask, pred_mask)
+    FP =compute_mask_FP(GT_mask, pred_mask)
+    if (TP + FP) > 0:
+        return TP / (TP + FP)
+    else:
+        return np.nan
+
+def compute_mask_recall(GT_mask, pred_mask):
+    TP = compute_mask_TP(GT_mask, pred_mask)
+    FN = compute_mask_FN(GT_mask, pred_mask)
+    if (TP + FN) > 0:
+        return TP / (TP + FN)
+    else:
+        return np.nan
     
 
 def compute_IOU(poly_a, poly_b):
@@ -351,7 +441,6 @@ def evaluate_privacy(priv_elem_GT, predictions, image_size):
     return dict_iou, dict_pixel_perf
 
 def listCoordinates_to_shapelyPolygon(list_coordinates):
-    print("TODO: check order coordinates")
     p = []
     for x, y in pairwise(list_coordinates):
         p.append((x, y))
@@ -363,7 +452,7 @@ def GT_annotation_to_polygon_dict(ground_truth, ratio=1):
         name = private_elem['attr_id']
         list_polygons = private_elem['polygons']
         if name not in priv_elem_GT:
-        	priv_elem_GT[name] = []
+            priv_elem_GT[name] = []
         # Reshape the polygons into a readable format.
         #readable_poly = []
         for poly in list_polygons:
@@ -450,7 +539,7 @@ def evaluate_instance(priv_elem_GT, predictions, segmentation_size, image_size):
     if (dict_counts['TP'] + dict_counts['FN']) > 0:
         recall = dict_counts['TP'] / (dict_counts['TP'] + dict_counts['FN'])
     else:
-    	recall = np.nan
+        recall = np.nan
                          
     ### Compute precision, recall
     return {'precision': precision, 'recall': recall}
@@ -519,3 +608,188 @@ def evaluate(ground_truth, predictions, evaluation_type, parameter_interval, lis
             dict_segment_result[param_eval]['precision'] = np.mean(dict_segment_result[param_eval]['precision'])
             dict_segment_result[param_eval]['recall'] = np.mean(dict_segment_result[param_eval]['recall'])
         return dict_segment_result 
+
+
+
+
+
+
+def evaluationPerSegment(segments_GT, segments_pred, threshold_pixels):
+    ### Compute numbers TP, TN, FP, FN
+    dict_counts = {'TP': 0, 'TN': 0, 'FP': 0, 'FN': 0}
+     
+    for segment_GT, segment_pred in zip(segments_GT, segments_pred):
+        #print("Check whether these rules are making sense.")
+        #print("For now, for each segment, we say that if more than half of the pixels are set to 1, then the segment is set at 1.")
+        # Get the number of 1s in each segment and compare with the size of the segment.
+        nb_1_GT = (segment_GT == 1).sum()
+        nb_1_pred = (segment_pred == 1).sum()
+        if nb_1_GT > threshold_pixels: # It means the segment is positive.
+            if nb_1_pred > threshold_pixels: # It means the segment is predicted as positive.
+                dict_counts['TP'] += 1
+            else: 
+                dict_counts['FN'] += 1
+        else:
+            if nb_1_pred > threshold_pixels:
+                dict_counts['FP'] += 1
+            else:
+                dict_counts['TN'] += 1
+        
+    #print("TODO: how to deal with NaN values?")  
+    if (dict_counts['TP'] + dict_counts['FP'] + dict_counts['TN'] + dict_counts['FN']) > 0:
+        accuracy = (dict_counts['TP'] + dict_counts['TN']) / (dict_counts['TP'] + dict_counts['FP'] + dict_counts['TN'] + dict_counts['FN'])
+    else:
+        accuracy = np.nan
+    
+    if (dict_counts['TP'] + dict_counts['FP']) > 0:
+        precision = dict_counts['TP'] / (dict_counts['TP'] + dict_counts['FP'])
+    else:
+        precision = np.nan
+    if (dict_counts['TP'] + dict_counts['FN']) > 0:
+        recall = dict_counts['TP'] / (dict_counts['TP'] + dict_counts['FN'])
+    else:
+        recall = np.nan
+        
+    
+    return accuracy, precision, recall
+                         
+
+def evaluationPerPixel(prediction_list, ground_truth_list, segment_list):
+    rate_obfuscation = {"pixel_accuracy": [], "pixel_precision": [], "pixel_recall": []}
+    for size_seg in segment_list:
+        rate_obfuscation[str(size_seg) + "_accuracy"] = []
+        rate_obfuscation[str(size_seg) + "_precision"] = []
+        rate_obfuscation[str(size_seg) + "_recall"] = []
+    
+    for current_image in prediction_list:
+        current_rate_obuscation_per_privacy_element = {}
+
+        _name_image = list(current_image.keys())[0]
+        # Get the ground truth.
+        _ground_truth = ground_truth_list[_name_image]
+        image_width = _ground_truth['image_width']
+        image_height = _ground_truth['image_height']
+        _ground_truth = _ground_truth["attributes"]
+
+        # Check that the method actually predicted something.
+        if len(current_image[_name_image]) > 0:
+            # Create the mask for the predictions.
+            list_mask_pred = []
+            for poly in current_image[_name_image]:
+                list_mask_pred.append(create_image_mask([image_width, image_height], list(zip(*shape(poly).exterior.coords.xy)))) # list(poly.exterior.coords.xy)))
+            pred_mask = combine_image_masks(list_mask_pred)
+            
+        # Get the ground truth mask.
+        
+        # First we need to merge overlapping polygons to avoid redundant information.
+        list_poly_GT = []
+        for ground_truth_segment in _ground_truth:
+            privacy_polygons = ground_truth_segment['polygons']
+            for poly in privacy_polygons:
+                list_poly_GT.append(listCoordinates_to_shapelyPolygon(poly))
+        merged_GT_polys = image_u.post_process_polygons(list_poly_GT)   
+        # Then we need to make them into a mask.
+        list_masks_GT = []
+        for poly in merged_GT_polys:    
+            list_masks_GT.append(create_image_mask([image_width, image_height], list(zip(*poly.exterior.coords.xy))))
+        GT_mask = combine_image_masks(list_masks_GT)
+            
+        # Compute scores per pixel.
+        if len(current_image[_name_image]) == 0:
+            pixel_accuracy = 0
+            pixel_precision = np.nan
+            pixel_recall = 0
+        else:
+            pixel_accuracy = compute_mask_accuracy(GT_mask, pred_mask)
+            pixel_precision = compute_mask_precision(GT_mask, pred_mask)
+            pixel_recall = compute_mask_recall(GT_mask, pred_mask)
+            
+        rate_obfuscation["pixel_accuracy"].append(pixel_accuracy)
+        rate_obfuscation["pixel_precision"].append(pixel_precision)
+        rate_obfuscation["pixel_recall"].append(pixel_recall)
+        
+        # Compute scores on the segment level.
+        for seg_size in segment_list:
+            ### Segment the masks
+            segments_GT = segment_array(GT_mask, seg_size)
+            segments_pred = segment_array(pred_mask, seg_size)
+            segment_size = segments_GT[0].shape[0] * segments_GT[0].shape[1]    
+            threshold_pixels = segment_size / 2
+            
+            accuracy, precision, recall = evaluationPerSegment(segments_GT, segments_pred, threshold_pixels)
+            rate_obfuscation[str(seg_size) + "_accuracy"].append(accuracy)
+            rate_obfuscation[str(seg_size) + "_precision"].append(precision)
+            rate_obfuscation[str(seg_size) + "_recall"].append(recall)
+            
+    
+    return rate_obfuscation
+    
+            
+import statistics
+def aggregateResultsPrivacyElement(dict_results, agg_type="withnan"):
+    new_dict = {}
+    for privacy_element in dict_results:
+        if agg_type == "withnan":
+            new_dict[privacy_element] = [statistics.mean(dict_results[privacy_element]), statistics.stdev(dict_results[privacy_element])]
+        else:
+            new_dict[privacy_element] = [np.nanmean(dict_results[privacy_element]), np.nanstd(dict_results[privacy_element])]
+        
+    return new_dict 
+
+from statistics import mean 
+
+
+
+def evaluationPerPrivacyElement(prediction_list, ground_truth_list):
+    rate_obuscation_per_privacy_element = {}
+
+    for current_image in prediction_list:
+        current_rate_obuscation_per_privacy_element = {}
+
+        _name_image = list(current_image.keys())[0]
+        # Get the ground truth.
+        _ground_truth = ground_truth_list[_name_image]
+        image_width = _ground_truth['image_width']
+        image_height = _ground_truth['image_height']
+        _ground_truth = _ground_truth["attributes"]
+
+        # Check that the method actually predicted something.
+        if len(current_image[_name_image]) > 0:
+            # Create the mask for the predictions.
+            list_mask_pred = []
+            for poly in current_image[_name_image]:
+                list_mask_pred.append(create_image_mask([image_width, image_height], list(zip(*shape(poly).exterior.coords.xy)))) # list(poly.exterior.coords.xy)))
+            pred_mask = combine_image_masks(list_mask_pred)
+
+        for ground_truth_segment in _ground_truth:
+            privacy_element = ground_truth_segment['attr_id']
+            privacy_polygons = ground_truth_segment['polygons']
+
+            # Get ground truth mask.
+            list_masks_GT = []
+            for poly in privacy_polygons:
+                # Compare each pixel of the private element.
+                a = listCoordinates_to_shapelyPolygon(poly)
+                list_masks_GT.append(create_image_mask([image_width, image_height], list(zip(*a.exterior.coords.xy))))
+            GT_mask = combine_image_masks(list_masks_GT)
+
+            # Get coverage for these polygons.
+            if len(current_image[_name_image]) > 0:
+                acc = compute_mask_accuracy(GT_mask, pred_mask)
+            else:
+                acc = 0.0
+            if privacy_element in current_rate_obuscation_per_privacy_element:
+                current_rate_obuscation_per_privacy_element[privacy_element].append(acc)
+            else:
+                current_rate_obuscation_per_privacy_element[privacy_element] = [acc]
+
+        # Aggregate the accuracy per privacy type for this image.
+        for privacy_element in current_rate_obuscation_per_privacy_element:
+            current_rate_obuscation_per_privacy_element[privacy_element] = mean(current_rate_obuscation_per_privacy_element[privacy_element])
+            # Add the results to the dictionary of results.
+            if privacy_element in rate_obuscation_per_privacy_element:
+                rate_obuscation_per_privacy_element[privacy_element].append(current_rate_obuscation_per_privacy_element[privacy_element])
+            else: 
+                rate_obuscation_per_privacy_element[privacy_element] = [current_rate_obuscation_per_privacy_element[privacy_element]]
+
+    return rate_obuscation_per_privacy_element
