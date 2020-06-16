@@ -11,7 +11,7 @@ import math
 import image_slicer
 import time
 
-import image_utils as mapping_u
+import image_utils as image_u
 
 from keras import backend as K 
 
